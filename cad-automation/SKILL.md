@@ -2,7 +2,7 @@
 name: cad-automation
 description: CAD自动化绘图skill，内置完整的AutoCAD二次开发知识体系。支持通过Python(pyautocad/win32com)/AutoLISP/C#/VBA连接AutoCAD进行自动化绘图、编辑、图层管理、标注、块与属性、三维建模、批量处理、文件转换等。也涵盖国产中望CAD/浩辰CAD的兼容性。
 category: engineering-cad
-version: 1.0.0
+version: 1.1.0
 author: Delancy
 ---
 
@@ -832,3 +832,225 @@ ss.Delete()
 - AutoCAD知识库 (31份资料，CAD自学网/周站长)
 
 **注意**: 所有代码单位为绘图单位（默认mm），使用前确认AutoCAD图形单位设置。国产CAD(中望/浩辰)COM接口基本兼容，部分VLAX函数差异请查阅对应API文档。
+
+---
+
+## 十六、CAD 核心铁律速查（2026-06-01 从 SW skill 架构移植）
+
+> 以下铁律来自 solidworks-automation v4.4.0 的成功验证模式，针对 CAD 场景做了适配。
+
+---
+
+### 铁律 0：启动即清理——关闭孤儿文档 + 清理选择集 🔴
+
+**SW对应**: solidworks-automation Sec 24 铁律0 (CloseDoc 启动清理)
+
+**CAD病灶**: 反复调试运行时，AutoCAD 同样会积累未保存的 Drawing*.dwg，且 COM 选择集(SelectionSets)使用后不 Delete() 会累积导致后续操作报错。
+
+```python
+# ═══════ CAD启动首行代码 ═══════
+import win32com.client
+acad = win32com.client.Dispatch("AutoCAD.Application")
+
+# 1. 清理所有孤儿选择集
+for ss in acad.ActiveDocument.SelectionSets:
+    try:
+        ss.Delete()
+    except:
+        pass
+
+# 2. 如果当前文档为空(Drawing1.dwg)，新建正式文档
+doc = acad.ActiveDocument
+if doc.Name.startswith("Drawing") and doc.ModelSpace.Count == 0:
+    # 用模板新建
+    doc.New("acadiso.dwt")
+```
+
+**LISP 等效**:
+```lisp
+;; 启动清理
+(defun startup_clean ()
+  ;; 清除所有选择集
+  (while (setq ss (ssget "_X"))
+    (setq ss nil))
+  ;; 确保在模型空间
+  (setvar "TILEMODE" 1)
+  (princ)
+)
+```
+
+---
+
+### 铁律 1：选择集用完必 Delete——CAD 的"GetBodies2 防假跑" 🔴
+
+**SW对应**: GetBodies2 实体计数验证
+
+**CAD病灶**: `SelectionSets.Add("SS1")` 使用后不 Delete，再次运行同名选择集会报 "已存在" → 程序中断。
+
+```python
+# ✅ 安全选择集模式（用完即删）
+def safe_select(acad, filter_type=None):
+    ss_name = "TEMP_SS"
+    # 删除已存在的同名选择集
+    try:
+        acad.ActiveDocument.SelectionSets(ss_name).Delete()
+    except:
+        pass
+    ss = acad.ActiveDocument.SelectionSets.Add(ss_name)
+    ss.Select(5)  # 全选
+    result = list(ss)
+    ss.Delete()  # ← 铁律：用完必删
+    return result
+```
+
+**验证机制——CAD 等效于 GetBodies2**:
+```python
+def verify_drawing(acad, expected_objects: int = None):
+    """验证图纸状态——CAD 的 GetBodies2 等效"""
+    model = acad.ActiveDocument.ModelSpace
+    count = model.Count
+    
+    doc = acad.ActiveDocument
+    doc.SendCommand("_AUDIT Y\n")  # 审计修复
+    doc.SendCommand("_PURGE A * N\n")  # 清理垃圾
+    
+    # 计算实体数（不含选择集内的辅助对象）
+    ss = safe_select(acad)
+    obj_count = len(ss)
+    
+    return {
+        "object_count": obj_count,
+        "model_count": count,
+        "passed": expected_objects is None or obj_count >= expected_objects
+    }
+```
+
+---
+
+### 铁律 2：三级执行策略——CAD 等效于 Python→VBA→C# 🔴
+
+**SW对应**: Sec 24 铁律8 (Tier 1 Python COM → Tier 2 VBA宏 → Tier 3 C# exe)
+
+| 级别 | 方案 | 适用场景 | 限制 |
+|:---:|------|------|------|
+| **Tier 1** | Python + pyautocad | 图元创建、图层管理、标注 | COM 对象生命周期管理 |
+| **Tier 2** | SendCommand / SCR 脚本 | 复杂编辑（TRIM/FILLET/CHAMFER） | 异步执行、错误处理弱 |
+| **Tier 3** | AutoLISP / C# .NET | 插件开发、性能敏感、批量 | LISP 调试困难；C# 需 AutoCAD .NET SDK |
+
+**降级逻辑**:
+```python
+def try_execute(operation, *args):
+    """CAD 三级降级执行"""
+    # Tier 1: pyautocad
+    try:
+        return operation(*args)
+    except:
+        pass
+    # Tier 2: SendCommand
+    try:
+        cmd = build_sendcommand(operation, *args)
+        acad.doc.SendCommand(cmd)
+        return True
+    except:
+        pass
+    # Tier 3: 加载 LISP 脚本
+    try:
+        acad.doc.SendCommand(f'(load "fallback.lsp")\n')
+        acad.doc.SendCommand(f'FALLBACK\n')
+        return True
+    except:
+        return False
+```
+
+---
+
+### 铁律 3：CAD 六大隐藏地雷 ⚡
+
+**SW对应**: Sec 21.2 五大 Interop DLL 地雷
+
+| # | 地雷 | 现象 | 正确做法 |
+|:---:|------|------|------|
+| 1 | 选择集不 Delete | "选择集已存在" 错误 | 用完立即 `ss.Delete()` |
+| 2 | SendCommand 编码 | 中文命令乱码/无效 | 用英文命令+下划线前缀 `_LINE` |
+| 3 | UCS 混淆 | 坐标与实际位置不符 | `SendCommand("_UCS _W\n")` 先切到世界坐标系 |
+| 4 | 对象捕捉干扰 | SendCommand 点选位置错误 | `SendCommand("_NON\n")` 临时关闭对象捕捉 |
+| 5 | LISP `command` 与 `vl-cmdf` | command 受 UNDO 影响 | 批量操作用 `vl-cmdf` |
+| 6 | pyautocad APoint 缺失 | 类型错误 | 所有坐标必须 `APoint(x,y,z)` 包装 |
+
+```python
+# 地雷3-4 的防护模板
+def safe_sendcommand(acad, cmd):
+    """发送命令前先重置 UCS + 关闭对象捕捉"""
+    # 固定世界坐标系
+    acad.doc.SendCommand("_UCS _W\n")
+    # 临时关闭对象捕捉（避免吸附到错误位置）
+    acad.doc.SendCommand("_NON\n")
+    time.sleep(0.05)
+    acad.doc.SendCommand(cmd)
+```
+
+---
+
+### 铁律 4：执行后强制审计——CAD 的 ForceRebuild3 🔴
+
+**SW对应**: ForceRebuild3 + GetBodies2 双重验证
+
+```python
+def verify_and_audit(acad):
+    """CAD 执行后验证——等效于 SW 的 ForceRebuild3"""
+    doc = acad.ActiveDocument
+    
+    # 1. 审计
+    doc.SendCommand("_AUDIT Y\n")
+    time.sleep(0.2)
+    
+    # 2. 清理（去除垃圾对象）
+    doc.SendCommand("_PURGE A * N\n")
+    time.sleep(0.2)
+    
+    # 3. 缩放范围（检查视觉完整性）
+    doc.SendCommand("_ZOOM _E\n")
+    time.sleep(0.2)
+    
+    # 4. 重生成（刷新显示）
+    doc.SendCommand("_REGENALL\n")
+    
+    return True
+```
+
+---
+
+### 铁律 5：编码与坐标系——SendCommand 两条前置命令 🔴
+
+**每次 SendCommand 前强制执行的固定管线**:
+
+```python
+def sendcommand_pipeline(acad, *commands):
+    """SendCommand 安全管线——两条前置 + N条主命令"""
+    # === 前置1: 锁定WCS ===
+    acad.doc.SendCommand("_UCS _W\n")
+    time.sleep(0.05)
+    
+    # === 前置2: 关闭对象捕捉 ===
+    acad.doc.SendCommand("_NON\n")
+    time.sleep(0.05)
+    
+    # === 主命令 ===
+    for cmd in commands:
+        acad.doc.SendCommand(cmd)
+        time.sleep(0.1)
+    
+    # === 后置: 重生成 ===
+    acad.doc.SendCommand("_REGENALL\n")
+```
+
+---
+
+### 十六、知识库更新记录
+
+| 版本 | 日期 | 核心变更 | 来源 |
+|:---:|------|------|------|
+| v1.1.0 | 2026-06-01 | 新增铁律速查：启动清理/选择集防泄漏/三级降级/六大地雷/审计验证/SendCommand管线 | SW skill 架构移植 |
+| v1.0.0 | 2026-05-24 | 初始版本，含14大章节：绘图/编辑/图层/标注/块/选择集/3D/打印/LISP/批量/AI+CAD | 4个IMA知识库融合 |
+
+
