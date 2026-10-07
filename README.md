@@ -47,7 +47,7 @@
 ```
 cad-skills/
 ├── cad-automation/     ← 自动化核心 (写代码画图)
-│   └── SKILL.md        (834行, 15章, 22KB)
+│   └── SKILL.md        (1200行, 18章)
 │       ├── Python pyautocad/win32com 连接
 │       ├── 绘图/编辑/图层/标注/块/属性
 │       ├── AutoLISP 自动化
@@ -57,7 +57,7 @@ cad-skills/
 │       └── AI+CAD 前沿趋势
 │
 └── cad-designer/       ← 设计方法论 (规范指导)
-    └── SKILL.md        (466行, 10章, 14KB)
+    └── SKILL.md        (1200行, 18章)
         ├── 国标制图规范 (GB/T)
         ├── 图层管理系统
         ├── 标注标准与公差
@@ -155,6 +155,19 @@ AI 自动：规划设计 → 生成代码 → 连接 AutoCAD → 绘制 → 添�
 ```
 生成螺栓系列 M8~M20，长度 30-100mm，国标 GB/T 5782
 ```
+
+---
+
+## 更新日志 | Changelog
+
+| 日期 | 版本 | 要点 |
+|------|------|------|
+| 2026-10-07 | cad-automation v1.2.0 | 新增 Section 18：轴承座零件图全流程二次实证（COM 忙等重试 / SendCommand 挂起陷阱→PurgeAll / 标注与出图实测 / 验证 L2-L4） |
+| 2026-06-11 | cad-automation v1.1.1 | 去自引用描述，架构描述优化；新增冲压模具专项流程 |
+| 2026-06-01 | v1.1.0 | 移植 solidworks-automation 铁律架构（Section 16 / 设计验证 L1-L4） |
+| 2026-05-24 | v1.0.0 | 初始版本，融合四大 IMA CAD 知识库 |
+
+完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-07
+
+### cad-automation v1.1.1 → v1.2.0
+
+> 经典大作业"轴承座零件图"全流程二次实战验证（AutoCAD 2024 简体中文 24.3 + Python 3.14 + pywin32）。
+
+#### 新增 Section 18：通用零件图全流程本机实证
+- 🔴 **COM 忙等重试**：忙时抛 -2147418111「被呼叫方拒绝接收呼叫」；属性访问也会被拒，重试必须包住属性链（lambda 写法）
+- 🔴 **文档生命周期**：Documents 归零后集合方法解析失败（AttributeError）；Add 后取 ActiveDocument 需重试+延时；清空旧图用纯 COM 逆序 Delete
+- 🔴 **SendCommand 挂起陷阱**：`_AUDIT _Y` 会追加"写审计报告文件?"提示导致同步调用永久挂起（实测卡死 12 分钟）；`_PURGE` 应答序列易错位 → 清理改用 `doc.PurgeAll()` API（修正铁律4 的 AUDIT 写法）
+- ⚡ **标注 API 实测**：AddDimDiametric 为 3 参签名；迭代集合引用传标注易报「对象已被删除」→ 直径尺寸用跨象限点 AddDimAligned + `%%c` 文字覆盖
+- ✅ **实测可用**：VARIANT 包装填充循环（外环+岛）、gbenor/gbcbig 中文样式、BACKGROUNDPLOT=0 + DWG To PDF.pc3 / PublishToWeb PNG.pc3 出图
+- ✅ **验证分层 L2/L3/L4 落地**：82 实体分类型清点 + PNG 视觉审查修复 3 处压线/错层
+
+---
+
+
 ## 2026-06-11
 
 ### cad-automation v1.1.0 → v1.1.1

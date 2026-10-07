@@ -1,8 +1,8 @@
-﻿---
+---
 name: cad-automation
 description: CAD自动化绘图skill，内置完整的AutoCAD二次开发知识体系。支持通过Python(pyautocad/win32com)/AutoLISP/C#/VBA连接AutoCAD进行自动化绘图、编辑、图层管理、标注、块与属性、三维建模、批量处理、文件转换等。也涵盖国产中望CAD/浩辰CAD的兼容性。
 category: engineering-cad
-version: 1.1.0
+version: 1.2.0
 author: Delancy
 ---
 
@@ -1074,6 +1074,7 @@ def sendcommand_pipeline(acad, *commands):
 |:---:|------|------|------|
 | v1.1.0 | 2026-06-01 | 新增铁律速查：启动清理/选择集防泄漏/三级降级/六大地雷/审计验证/SendCommand管线 | 架构优化 |
 | v1.0.0 | 2026-05-24 | 初始版本，含14大章节：绘图/编辑/图层/标注/块/选择集/3D/打印/LISP/批量/AI+CAD | 知识体系构建 |
+| v1.2.0 | 2026-10-07 | 新增第十八章：轴承座零件图全流程二次实证（COM忙等重试/文档生命周期/SendCommand挂起陷阱→PurgeAll/标注API实测/填充中文出图/验证L2-L4） | 大作业实战 |
 
 
 
@@ -1136,3 +1137,64 @@ required_text = ["冲压模具", "凹模板", "凸模", "卸料板", "导柱", "
 
 ### 17.5 AutoCAD COM 最小测试脚本
 桌面打包目录已提供 `scripts/draw_stamping_die_smoke_test.py`。该脚本已在本机 AutoCAD 2024 上实测通过，并生成 `test_output/stamping_die_smoke_test_20260611_134736.dwg`。
+
+
+---
+
+## 十八、2026-10-07 二次实战验证：通用零件图全流程（轴承座，本机实证）
+
+> 用经典 CAD 课程大作业"轴承座零件图"（A3 图框+标题栏+主/俯/左三视图+左视全剖+剖面线+
+> 10 处尺寸标注+技术要求+粗糙度属性块+PDF/PNG 出图，82 实体，纯绘制 5.5s / 含出图 11.7s）
+> 在 AutoCAD 2024 简体中文 (24.3) + Python 3.14 + pywin32 上实测。
+> 本节修正/补充 十六(铁律) 与 十七(冲压专项) 中未经本次验证的写法。
+
+### 18.1 COM 忙等重试（必须）🔴
+- AutoCAD 忙时抛 `-2147418111 被呼叫方拒绝接收呼叫`。**属性访问本身也会被拒**：
+  `R(app.Documents.Add)` 是错的——属性求值发生在重试之外；必须
+  `R(lambda: app.Documents.Add())` 把整条属性链包进重试。
+- 同族错误码：`-2147417846`(RPC_RETRYLATER)、`-2147417848`。重试 60×0.5s 足够覆盖常规忙窗。
+
+### 18.2 文档生命周期 🔴
+- **绝不让 Documents 归零**：全部关闭后 COM 集合方法解析直接 `AttributeError <unknown>.Count/.Add`。
+- `Documents.Add()` 后立刻取 `ActiveDocument` 需 `sleep(1.0)` + 忙等重试。
+- 清空旧图用纯 COM 逆序删除：`for i in reversed(range(ms.Count)): ms.Item(i).Delete()`。
+  **不要**用 `_ERASE _ALL`——空文档上会挂在"选择对象:"提示上（见 18.3）。
+- 残留草稿清理只动 `Drawing*.dwg` 自动命名文档；窗口标题带 `*` 表示有未保存修改。
+
+### 18.3 SendCommand 是最大的坑（能不用就不用）🔴
+- **`_AUDIT _Y` 发现错误时会追加"写审计报告文件?"提示**——命令串没准备这个答案，
+  同步 SendCommand 永久挂起（实测卡死 12 分钟）。`_PURGE _A _* _N` 的应答序列同样易错位。
+- 清理一律用 **`doc.PurgeAll()`**（纯 API，无提示）。SendCommand 只用于无追加提示的命令
+  （`_ZOOM _E` / `_REGENALL` 实测安全）。AUDIT 对纯生成图形可省略。
+- 解除挂起：`doc.SendCommand(chr(3)*2)`（Ctrl+C）。COM 已卡死 + 锁屏/UIPI 时键盘不可达，
+  最后手段 `taskkill /IM acad.exe /F`（先核对窗口内无用户未保存数据）。
+
+### 18.4 标注 API 实测 ⚡
+- `AddDimDiametric` 是 **3 参** `(Object, ChordPoint, LeaderLength)`，4 参 TypeError。
+- **迭代 ModelSpace 拿到的圆/弧引用再传给标注类 API，易报"对象已被删除"**（-2145386420）。
+- 最稳写法：直径类尺寸用跨象限点 `AddDimAligned(p1, p2, tp)` + `TextOverride="%%c50"`
+  （%%c=⌀ %%d=° %%p=±）；半径用手工引线+文字。
+- 标注样式直接设系统变量（A3 实测：DIMTXT 3.5 / DIMASZ 2.5 / DIMEXO 0.8 / DIMEXE 2.0 /
+  DIMDEC 0 / LTSCALE 4 / DIMSCALE 1）。
+
+### 18.5 填充 / 中文 / 出图（实测可用）✅
+- 填充：`AddHatch(0,"ANSI31",True)` → `AppendOuterLoop(VARIANT(VT_ARRAY|VT_DISPATCH,[闭合pline]))`
+  → 内孔 `AppendInnerLoop`（岛）→ `PatternScale` → `Evaluate()`。边界用闭合 LightWeightPolyline。
+- 中文样式：`TextStyle.FontFile="gbenor.shx"; BigFontFile="gbcbig.shx"`；重名样式要复用
+  （`TextStyles.Add` 重名会炸，先查 `Name in [s.Name for s in doc.TextStyles]`）。
+- `Linetypes.Load` 对已加载线型抛"记录名重复" → 先遍历查重再 Load。
+- 出图：先 `SetVariable("BACKGROUNDPLOT", 0)`（否则 PlotToFile 异步返回拿不到文件）；
+  PDF：`layout.ConfigName="DWG To PDF.pc3"`，纸张从 `GetCanonicalMediaNames()` 里选
+  `ISO_A3_(420.00_x_297.00_MM)`；PNG：`PublishToWeb PNG.pc3`（`XGA_Hi-Res_(1600.00_x_1200.00_Pixels)`）；
+  `PlotType=1(Extents) + StandardScale=0(ScaleToFit) + CenterPlot=True`；PlotToFile 后轮询文件落盘。
+
+### 18.6 验证分层 L2/L3/L4 落地
+- L2：`ModelSpace.Count`；L3：按 `(ObjectName, Layer)` 分类型清点（本例 82 实体：
+  10 标注 / 4 圆 / 4 弧 / 2 填充 / 9 虚线 / 7 中心线 / 26 实线 / 9 文字 / 2 块参照）+ `PurgeAll()`。
+- L4：PNG 出图后视觉审查——本次实测抓出 3 处纯数据检查抓不到的问题：
+  A—A 视图名与 60 尺寸文字重叠、粗糙度符号压 120 尺寸线、填充对象误落 WALL 层，修复后复检通过。
+
+### 18.7 环境事实
+- 本机 AutoCAD 2024 简体中文装于 `E:\CAD\CAD\AutoCAD 2024\`（注册表
+  `HKLM\SOFTWARE\Autodesk\AutoCAD\R24.3\ACAD-7101:804\AcadLocation`），ProgID `AutoCAD.Application`。
+- 完整实测脚本（探针 / 绘图 / 关窗三件套）见仓库 `examples/bearing-seat/脚本/`（本次实战沉淀）。
